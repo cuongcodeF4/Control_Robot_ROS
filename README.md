@@ -1,6 +1,6 @@
 # Control Robot ROS
 
-> Control a differential-drive robot using **ROS 1 Noetic** by tilting an **MPU-6050 IMU sensor** connected to a **Raspberry Pi 4**. Supports Gazebo simulation on Ubuntu before deploying to real hardware.
+> Control a **differential-drive robot simulated in Gazebo** using **ROS 1 Noetic** by physically tilting an **MPU-6050 IMU sensor** connected to a **Raspberry Pi 4**. The Raspberry Pi reads tilt angles via a complementary filter and publishes wheel velocity commands over the ROS network to the Gazebo simulation running on an Ubuntu PC. No real motors are required.
 
 ---
 
@@ -13,8 +13,7 @@
 - [Network Configuration](#network-configuration)
 - [Ubuntu PC Setup](#ubuntu-pc-setup)
 - [Raspberry Pi 4 Setup](#raspberry-pi-4-setup)
-- [Running — Simulation (Gazebo)](#running--simulation-gazebo)
-- [Running — Real Hardware](#running--real-hardware)
+- [Running the Project](#running-the-project)
 - [Control Mapping](#control-mapping)
 - [Project Structure](#project-structure)
 - [Pictures](#pictures)
@@ -24,24 +23,24 @@
 ## System Overview
 
 ```
-┌─────────────────────────────┐          LAN / Wi-Fi          ┌────────────────────────────────┐
-│        Ubuntu PC            │ ◄────────────────────────────► │       Raspberry Pi 4           │
-│                             │   ROS Topics over TCP/IP       │                                │
-│  • ROS Master (roscore)     │                                │  • ROS Node (hardware)         │
-│  • Gazebo Simulation        │                                │  • Reads MPU-6050 via I2C      │
-│  • Visualization (RViz)     │                                │  • Publishes /cmd_vel          │
-│  • Joystick teleop          │                                │  • Drives motors               │
-└─────────────────────────────┘                                └─────────────┬──────────────────┘
-                                                                             │ I2C (SDA/SCL)
-                                                                     ┌───────▼────────┐
-                                                                     │   MPU-6050     │
-                                                                     │  Accelerometer │
-                                                                     │  + Gyroscope   │
-                                                                     └────────────────┘
+┌──────────────────────────────────────┐        LAN / Wi-Fi        ┌───────────────────────────────────────────┐
+│             Ubuntu PC                │ ◄───────────────────────► │            Raspberry Pi 4                 │
+│                                      │  ROS Topics over TCP/IP   │                                           │
+│  • ROS Master (roscore)              │                           │  • Node: control_velocity                 │
+│  • Gazebo Simulation (my_diffbot)    │ ◄── Float64 wheel cmds ── │  • Reads MPU-6050 via I2C                 │
+│  • joint1_velocity_controller        │                           │  • Complementary filter (α=0.98)          │
+│  • joint2_velocity_controller        │                           │  • Publishes wheel velocity @ 5 Hz        │
+└──────────────────────────────────────┘                           └────────────────────┬──────────────────────┘
+                                                                                        │ I2C (SDA/SCL)
+                                                                                ┌───────▼────────┐
+                                                                                │   MPU-6050     │
+                                                                                │  Accel + Gyro  │
+                                                                                │  addr: 0x68    │
+                                                                                └────────────────┘
 ```
 
-- **Ubuntu PC** acts as the **ROS master**. It runs Gazebo simulation and can also send joystick commands.
-- **Raspberry Pi 4** connects to the same local network, reads tilt data from the MPU-6050, and controls the robot motors.
+- **Ubuntu PC** is the **ROS master**. It runs Gazebo with the `my_diffbot` differential-drive robot model and listens for wheel velocity commands.
+- **Raspberry Pi 4** connects to the same local network, reads tilt angles from the MPU-6050 using a complementary filter, calculates per-wheel velocities, and publishes them to the Gazebo simulation. No real motors are involved.
 
 ---
 
@@ -49,14 +48,12 @@
 
 | Component | Details |
 |---|---|
-| PC | Ubuntu 20.04 LTS, ROS Noetic |
+| PC | Ubuntu 20.04 LTS, ROS Noetic, Gazebo |
 | Raspberry Pi 4 | 2 GB RAM or higher, running Ubuntu Server 20.04 |
-| MPU-6050 | 6-axis IMU (accelerometer + gyroscope), I2C interface |
-| Robot chassis | Differential drive (2-wheel or 4-wheel) |
-| Motor driver | e.g., L298N or L9110S |
-| DC motors | Compatible with your chassis |
-| Power supply | Battery pack for Raspberry Pi and motors |
+| MPU-6050 | 6-axis IMU (accelerometer + gyroscope), I2C interface, address 0x68 |
 | Network | Both devices on the same Wi-Fi or wired LAN |
+
+> This project is **simulation only**. The Gazebo `my_diffbot` model is the robot — no physical chassis, motor driver, or DC motors are needed.
 
 ---
 
@@ -119,10 +116,11 @@ rosdep update
 gazebo --version
 ```
 
-5. **Install joystick support (optional):**
+5. **Install Gazebo ROS controllers** (required for `my_diffbot` wheel velocity controllers):
 
 ```bash
-sudo apt install ros-noetic-joy ros-noetic-teleop-twist-joy
+sudo apt install ros-noetic-gazebo-ros-pkgs ros-noetic-gazebo-ros-control
+sudo apt install ros-noetic-ros-controllers ros-noetic-ros-control
 ```
 
 ---
@@ -155,8 +153,8 @@ sudo reboot
 4. **Install Python dependencies for MPU-6050:**
 
 ```bash
-sudo apt install python3-pip
-pip3 install smbus2 mpu6050-raspberrypi
+sudo apt install python3-pip python3-smbus
+pip3 install smbus2
 ```
 
 5. **Install catkin tools:**
@@ -286,39 +284,13 @@ source ~/.bashrc
 
 ---
 
-## Running — Simulation (Gazebo)
+## Running the Project
 
-Run everything on the **Ubuntu PC** only. No Raspberry Pi or physical hardware needed.
-
-**Terminal 1 — Start ROS master:**
-
-```bash
-roscore
-```
-
-**Terminal 2 — Launch Gazebo simulation:**
-
-```bash
-roslaunch <your_package_name> gazebo.launch
-```
-
-**Terminal 3 — (Optional) Control via joystick:**
-
-```bash
-roslaunch <your_package_name> teleop.launch
-```
-
-> Replace `<your_package_name>` with the actual ROS package name found inside `catkin_ws/src/`.
-
-You should see the robot model appear in Gazebo. Use the joystick or publish to `/cmd_vel` to move it.
-
----
-
-## Running — Real Hardware
-
-Follow these steps **in order**. Do not start nodes on the Raspberry Pi before `roscore` is running on the Ubuntu PC.
+Follow these steps **in order**. The Ubuntu PC must have `roscore` and Gazebo running before starting the Raspberry Pi node.
 
 ### Step 1 — Start ROS Master (Ubuntu PC)
+
+Open a terminal on the Ubuntu PC:
 
 ```bash
 roscore
@@ -329,59 +301,86 @@ Leave this terminal open. Wait until you see:
 started core service [/rosout]
 ```
 
-### Step 2 — Launch Robot Nodes (Ubuntu PC)
+### Step 2 — Launch Gazebo Simulation (Ubuntu PC)
 
 Open a new terminal:
 
 ```bash
-roslaunch <your_package_name> robot.launch
+roslaunch <your_package_name> gazebo.launch
 ```
 
-### Step 3 — Start Hardware Control Node (Raspberry Pi 4)
+> Replace `<your_package_name>` with the ROS package name found inside `Package_ROS_on_Ubuntu/catkin_ws/src/`.
 
-SSH into the Raspberry Pi:
+The Gazebo window will open and display the `my_diffbot` differential-drive robot. Wait until Gazebo finishes loading before proceeding.
+
+### Step 3 — Start MPU-6050 Control Node (Raspberry Pi 4)
+
+SSH into the Raspberry Pi from a new terminal on the Ubuntu PC:
 
 ```bash
 ssh ubuntu@192.168.1.101
 ```
 
-Then run the control node:
+Run the control node:
 
 ```bash
-rosrun <your_raspberrypi_package_name> mpu6050_control.py
+rosrun <your_raspberrypi_package_name> mpu_control.py
 ```
 
-### Step 4 — Verify Topics
+You should see live output in the terminal:
+```
+Roll: 2.34, Pitch: -1.10, Vel_R: 0.00, Vel_L: 0.00
+```
 
-On the Ubuntu PC, confirm the MPU-6050 data and velocity commands are flowing:
+Tilting the MPU-6050 beyond ±20° will move the robot in the Gazebo simulation.
+
+### Step 4 — Verify Topics (Ubuntu PC)
+
+In another terminal, confirm wheel velocity commands are being received:
 
 ```bash
 rostopic list
-rostopic echo /cmd_vel
+# Verify these topics exist:
+# /my_diffbot/joint1_velocity_controller/command
+# /my_diffbot/joint2_velocity_controller/command
+
+rostopic echo /my_diffbot/joint1_velocity_controller/command
 ```
 
 ### Step 5 — Stop Everything
 
-Stop nodes in reverse order:
-1. `Ctrl+C` on the Raspberry Pi node
-2. `Ctrl+C` on the Ubuntu robot nodes
+Stop in reverse order:
+1. `Ctrl+C` on the Raspberry Pi `mpu_control.py` node
+2. `Ctrl+C` on the Gazebo launch
 3. `Ctrl+C` on `roscore`
 
 ---
 
 ## Control Mapping
 
-Tilt the MPU-6050 module to control robot movement:
+Tilt the MPU-6050 module to control the robot in Gazebo. A **complementary filter (α = 0.98)** fuses accelerometer and gyroscope data to calculate stable roll and pitch angles.
 
-| Tilt Direction | Robot Action |
+| Tilt Axis | Direction | Angle Threshold | Robot Action |
+|---|---|---|---|
+| **Roll** | Tilt forward | > +20° | Move forward |
+| **Roll** | Tilt backward | < −20° | Move backward |
+| **Pitch** | Tilt right | > +20° | Turn right (while moving) |
+| **Pitch** | Tilt left | < −20° | Turn left (while moving) |
+| Both axes | Flat / level | Within ±20° | **Stop** (dead zone) |
+
+**Velocity behaviour:**
+- Speed increases progressively as tilt angle increases (from 20° up to 90°)
+- An **acceleration factor** smoothly reduces the speed multiplier at extreme tilt angles
+- Maximum wheel velocity is approximately **30 rad/s** at 90° tilt
+
+**ROS Topics published (Float64):**
+
+| Topic | Description |
 |---|---|
-| Tilt **Forward** (pitch +) | Move Forward |
-| Tilt **Backward** (pitch −) | Move Backward |
-| Tilt **Left** (roll −) | Turn Left |
-| Tilt **Right** (roll +) | Turn Right |
-| **Level / Flat** | Stop |
+| `/my_diffbot/joint1_velocity_controller/command` | Right wheel velocity |
+| `/my_diffbot/joint2_velocity_controller/command` | Left wheel velocity |
 
-The accelerometer readings are mapped to linear and angular velocity values published on the `/cmd_vel` topic (`geometry_msgs/Twist`).
+**ROS Node:** `control_velocity` &nbsp;|&nbsp; **Publish rate:** 5 Hz &nbsp;|&nbsp; **Filter sample rate:** 200 Hz (dt = 0.005 s)
 
 ---
 
@@ -391,15 +390,19 @@ The accelerometer readings are mapped to linear and angular velocity values publ
 Control_Robot_ROS/
 ├── Package_ROS_on_Ubuntu/
 │   └── catkin_ws.zip          # ROS workspace for Ubuntu PC
-│                              # Contains: Gazebo simulation, robot description (URDF),
-│                              #           visualization (RViz), teleop nodes
+│                              # Contains: my_diffbot robot description (URDF),
+│                              #           Gazebo world & launch files,
+│                              #           joint velocity controllers config
 ├── Package_control_raspberrypi/
 │   └── catkin_ws.zip          # ROS workspace for Raspberry Pi 4
-│                              # Contains: MPU-6050 reader node,
-│                              #           motor driver interface, /cmd_vel publisher
+│                              # Contains: mpu_control.py
+│                              #   - Reads MPU-6050 via I2C (smbus)
+│                              #   - Complementary filter for roll/pitch
+│                              #   - Publishes Float64 wheel velocities
+│                              #     to /my_diffbot/joint*_velocity_controller/command
 └── Picture/
-    ├── Robot_in_Gazebo.jpg    # Robot simulated in Gazebo
-    └── Tay_cam.jpg            # Physical MPU-6050 controller (hand-held)
+    ├── Robot_in_Gazebo.jpg    # my_diffbot robot in Gazebo simulation
+    └── Tay_cam.jpg            # Hand-held MPU-6050 controller
 ```
 
 ---
